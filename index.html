@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>译镜 TransLens</title>
+  <meta name="description" content="学术文本回译检查与多版本对照工作台。自带 API Key，数据只保存在浏览器本地。">
+  <meta name="referrer" content="no-referrer">
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="logo">译</div><span class="hide-xs">译镜</span></div>
+    <div class="ws">
+      <span class="ws-name" id="wsName" contenteditable="true" spellcheck="false" title="工作区名称（点击修改）"></span>
+      <button class="btn icon ghost" id="btnWs" title="切换 / 新建工作区" aria-label="工作区菜单"><svg width="12" height="12" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></button>
+    </div>
+    <div class="sep hide-sm"></div>
+    <div class="tbgroup hide-sm" id="presets"></div>
+    <div class="sep hide-sm"></div>
+    <button class="btn" id="btnSync" title="同步滚动各窗格">⇅ <span class="hide-lg">同步滚动</span></button>
+    <button class="btn" id="btnDiff" title="相对基准标签高亮差异（Alt+D）">≠ <span class="hide-xs">差异</span></button>
+    <div class="spacer"></div>
+    <button class="btn" id="btnAll" title="批量翻译当前工作区里所有未翻译 / 原文改过的标签，会先列出来让你确认（Ctrl/⌘+Shift+Enter）。只翻译一个标签请用该标签工具条上的「翻译本标签」。">▶ <span class="hide-xs">翻译所有标签</span></button>
+    <button class="btn" id="btnNew" title="新建标签（Alt+T）" aria-label="新建标签"><span class="ico plus">＋</span><span class="hide-md">新标签</span></button>
+    <button class="btn settings" id="btnSettings" title="设置：模型服务（API Key）、提示词、格式规则、术语表、外观、数据备份" aria-label="设置"><svg class="ico" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="hide-xs">设置</span></button>
+    <button class="btn icon" id="btnTheme" title="主题：跟随系统" aria-label="切换主题"></button>
+  </header>
+  <main id="workspace"></main>
+  <footer class="statusbar" id="status"></footer>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

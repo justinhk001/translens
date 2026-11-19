@@ -1,0 +1,23 @@
+# 依赖与构建产物
+node_modules/
+dist/
+.wrangler/
+coverage/
+
+# ⚠ 密钥与本地配置：永远不要提交
+.env
+.env.*
+!.env.example
+.dev.vars
+*.pem
+*.key
+# 应用导出的备份可能包含 API Key（勾选「包含 API Key」时）
+translens-backup-*.json
+
+# 编辑器 / 系统 / 本地工具
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+*.log

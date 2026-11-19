@@ -1,0 +1,28 @@
+{
+  "name": "translens",
+  "private": true,
+  "version": "0.3.0",
+  "description": "译镜 TransLens：学术文本回译检查与多版本对照工作台（纯前端，数据只存浏览器本地）",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "deploy": "npm run build && npx wrangler pages deploy dist --project-name translens"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.10.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
+  }
+}

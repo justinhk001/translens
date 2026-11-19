@@ -1,0 +1,4 @@
+#!/bin/sh
+# 提交前检查暂存的文件里有没有 API Key 等密钥。
+# 启用方法（克隆仓库后执行一次）：git config core.hooksPath .githooks
+exec node scripts/check-secrets.mjs --staged
