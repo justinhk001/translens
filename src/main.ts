@@ -25,7 +25,7 @@ function confirmTranslateAll(): void {
   if (!ids.length) { toast('所有标签都已是最新译文，没有需要翻译的标签'); return; }
   if (ids.length > 1) {
     const names = ids.map(id => `· ${tabsOf()[id].title}`).join('\n');
-    if (!confirm(`将翻译以下 ${ids.length} 个标签（未翻译、出错或原文改过的；已是最新的不会重翻）：\n\n${names}\n\n只想翻译当前标签的话，请点该标签工具条上的「翻译本标签」。继续吗？`)) return;
+    if (!confirm(`将翻译以下 ${ids.length} 个标签（未翻译、出错或原文改过的；已是最新的不会重翻）：\n\n${names}\n\n只想翻译当前标签的话，请点该标签原文右上角的「翻译本标签」。继续吗？`)) return;
   }
   translateAll(ids);
 }

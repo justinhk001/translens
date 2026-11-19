@@ -155,6 +155,7 @@ export function renderTabBody(tab: Tab): HTMLElement {
   modeSel.title = '翻译模式：' + preset.desc;
   const fmtSel = sel(s.latex, FORMAT_MODES.map(f => [f.id, f.short]), v => setS({ latex: v as Tab['settings']['latex'] }), '格式处理');
   fmtSel.title = '格式处理：' + fmt.desc;
+  const translateBtn = h('button', { class: 'btn sm ' + (isRun ? '' : 'primary'), title: '只翻译这个标签，不影响其他标签（Ctrl/⌘ + Enter）', onclick: () => translateTab(tab.id) }, isRun ? '■ 停止' : '翻译本标签');
   const toolbar = h('div', { class: 'toolbar' },
     dirSel,
     h('span', { class: 'sel-group' }, modeSel,
@@ -164,8 +165,7 @@ export function renderTabBody(tab: Tab): HTMLElement {
       h('button', { class: 'btn sm icon ghost', title: '几种格式处理方式有什么区别？', 'aria-label': '格式处理说明', onclick: (e: MouseEvent) => openFormatHelp(e.currentTarget as HTMLElement) }, '?')),
     h('div', { class: 'seg', title: '标签内布局' },
       ([['auto', '自动'], ['row', '左右'], ['col', '上下'], ['tgt', '仅译文']] as const).map(([v, l]) => h('button', { class: s.view === v ? 'on' : '', onclick: () => setS({ view: v }) }, l))),
-    h('div', { class: 'spacer' }),
-    h('button', { class: 'btn sm ' + (isRun ? '' : 'primary'), title: '只翻译这个标签，不影响其他标签（Ctrl/⌘ + Enter）', onclick: () => translateTab(tab.id) }, isRun ? '■ 停止' : '翻译本标签'));
+    s.view === 'tgt' ? translateBtn : null);
 
   // 原文：始终可编辑
   const srcActs = h('div', { class: 'acts' });
@@ -179,11 +179,12 @@ export function renderTabBody(tab: Tab): HTMLElement {
     onCaret: i => highlightTarget(tab, i),
   });
   srcPane.appendChild(editor);
+  const base = baseOf(tab);
+  if (base) srcActs.append(h('button', { class: 'btn sm ghost', title: `让模型说明本标签相对「${base.title}」在意思上的变化`, onclick: () => { if (tab.analysis?.baseId === base.id && tab.analysis.status === 'done' && tab.analysis.sourceSnap === tab.source + '\u0000' + base.source) openAnalysis(tab.id); else analyzeDiff(tab.id); } }, 'AI 解读差异'));
   srcActs.append(h('button', { class: 'btn sm ghost', title: '合并 PDF 复制带来的硬换行和连字符断词', onclick: () => {
     tab.source = fixPdfBreaks(tab.source); editor.textarea.value = tab.source; editor.paint(); onSourceInput(tab); toast('已整理断行');
   } }, '整理断行'));
-  const base = baseOf(tab);
-  if (base) srcActs.append(h('button', { class: 'btn sm ghost', title: `让模型说明本标签相对「${base.title}」在意思上的变化`, onclick: () => { if (tab.analysis?.baseId === base.id && tab.analysis.status === 'done' && tab.analysis.sourceSnap === tab.source + '\u0000' + base.source) openAnalysis(tab.id); else analyzeDiff(tab.id); } }, 'AI 解读差异'));
+  if (s.view !== 'tgt') srcActs.append(translateBtn);
 
   // 译文
   const histSel = tab.runs.length > 1 ? h('select', {
