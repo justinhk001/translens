@@ -40,10 +40,14 @@ export function toast(msg: string, action?: string, fn?: () => void): void {
 }
 
 let menuEl: HTMLElement | null = null;
+let menuAnchor: HTMLElement | null = null;
+let lastClosedAnchor: HTMLElement | null = null;
 export const menuOpen = () => !!menuEl;
-export function closeMenu(): void { menuEl?.remove(); menuEl = null; }
-export function openMenu(content: HTMLElement[], x: number, y: number, cls = ''): void {
+export function closeMenu(): void { menuEl?.remove(); menuEl = null; menuAnchor = null; }
+export function openMenu(content: HTMLElement[], x: number, y: number, cls = '', anchor?: HTMLElement): void {
+  if (anchor && anchor === lastClosedAnchor) { lastClosedAnchor = null; return; }
   closeMenu();
+  menuAnchor = anchor ?? null;
   menuEl = h('div', { class: 'menu ' + cls, role: 'menu' }, content);
   document.body.appendChild(menuEl);
   const r = menuEl.getBoundingClientRect();
@@ -52,7 +56,13 @@ export function openMenu(content: HTMLElement[], x: number, y: number, cls = '')
 }
 export const menuItem = (label: string, fn: () => void, key?: string, cls = '') =>
   h('button', { class: cls, role: 'menuitem', onclick: () => { closeMenu(); fn(); } }, label, key ? h('span', { class: 'k' }, key) : null);
-document.addEventListener('pointerdown', e => { if (menuEl && !menuEl.contains(e.target as Node)) closeMenu(); });
+document.addEventListener('pointerdown', e => {
+  if (menuEl && !menuEl.contains(e.target as Node)) {
+    lastClosedAnchor = menuAnchor;
+    setTimeout(() => { lastClosedAnchor = null; }, 0);
+    closeMenu();
+  }
+});
 
 export async function copyText(text: string, okMsg: string): Promise<void> {
   try { await navigator.clipboard.writeText(text); toast(okMsg); }

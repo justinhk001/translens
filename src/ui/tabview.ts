@@ -2,9 +2,10 @@ import type { Segment, Tab } from '../types';
 import { diffTexts } from '../core/diff';
 import { fixPdfBreaks } from '../core/text';
 import { FORMAT_MODES } from '../presets/prompts';
+import { isLocalProvider } from '../presets/providers';
 import { currentRun, getPrompt, getProvider, isStale, resolveDir, save, srcLang, state, tabsOf, tgtLang, ws } from '../store/state';
 import { analyzeDiff, displayText, running, sourceSegs, tgtTextOf, translateTab } from '../app/translate';
-import { $, $$, copyText, esc, h, toast } from './dom';
+import { $, $$, ICONS, closeMenu, copyText, esc, h, openMenu, toast } from './dom';
 import { refreshTabHandle } from './layout';
 import { openAnalysis } from './analysis';
 import { openFormatHelp } from './help';
@@ -38,14 +39,98 @@ const baseOf = (tab: Tab): Tab | null => {
 // ---------------------------------------------------------------------------
 // 标签主体
 // ---------------------------------------------------------------------------
-function modelOptions(): [string, string][] {
-  const opts: [string, string][] = [['demo::', '演示模式（内置示例）']];
-  for (const p of state.providers) {
-    const models = [...new Set([p.model, ...p.models].filter(Boolean))];
-    if (!models.length) opts.push([p.id + '::', `${p.name} · 未填模型`]);
-    for (const m of models) opts.push([p.id + '::' + m, `${p.name} · ${m}`]);
-  }
-  return opts;
+function openTabModelMenu(anchor: HTMLElement, tab: Tab, setS: (patch: Partial<Tab['settings']>) => void): void {
+  const s = tab.settings;
+  const curProvider = getProvider(s.providerId);
+  const activeModel = curProvider ? (s.model || curProvider.model) : '';
+  const totalModels = state.providers.reduce((sum, p) => sum + new Set([p.model, ...p.models].filter(Boolean)).size, 0);
+  const list = h('div', { class: 'picker-list' });
+  const search = totalModels > 10
+    ? (h('input', { class: 'input picker-search', placeholder: '搜索服务或模型…', spellcheck: 'false' }) as HTMLInputElement)
+    : null;
+  const expandedGroups = new Set<string>();
+
+  const renderList = (query: string) => {
+    list.replaceChildren();
+    const q = query.trim().toLowerCase();
+    if (!q) {
+      if (!state.providers.length) {
+        list.appendChild(h('div', { class: 'picker-empty' }, '还没有模型服务，点击下方「管理模型服务」添加'));
+        return;
+      }
+      for (const p of state.providers) {
+        const models = [...new Set([p.model, ...p.models].filter(Boolean))];
+        const warn = !isLocalProvider(p.kind) && !p.apiKey.trim() ? '（未填 Key）' : '';
+        list.appendChild(h('div', { class: 'menu-title' }, p.name + warn));
+        if (!models.length) {
+          list.appendChild(h('button', { role: 'menuitem', onclick: () => { closeMenu(); openSettings('providers'); } }, '   未填模型（去设置）'));
+          continue;
+        }
+        const curForP = s.providerId === p.id ? activeModel : '';
+        let visible = models;
+        if (models.length > 6 && !expandedGroups.has(p.id)) {
+          visible = [...new Set([p.model, curForP].filter(Boolean))];
+          if (!visible.length) visible = models.slice(0, 1);
+        }
+        for (const m of visible) {
+          const isCur = s.providerId === p.id && activeModel === m;
+          list.appendChild(h('button', {
+            class: isCur ? 'on' : '', role: 'menuitem',
+            onclick: () => { closeMenu(); setS({ providerId: p.id, model: m === p.model ? '' : m }); },
+          }, (isCur ? '✓ ' : '   ') + m, m === p.model ? h('span', { class: 'k' }, '默认') : null));
+        }
+        if (models.length > 6 && !expandedGroups.has(p.id)) {
+          list.appendChild(h('button', {
+            class: 'picker-more', role: 'menuitem',
+            onclick: (e: Event) => { e.stopPropagation(); expandedGroups.add(p.id); renderList(query); },
+          }, `   展开全部 ${models.length} 个模型 ▾`));
+        }
+      }
+      return;
+    }
+
+    const hits: { p: typeof state.providers[number]; m: string }[] = [];
+    for (const p of state.providers) {
+      const models = [...new Set([p.model, ...p.models].filter(Boolean))];
+      const nameHit = p.name.toLowerCase().includes(q);
+      for (const m of models) {
+        if (nameHit || m.toLowerCase().includes(q)) hits.push({ p, m });
+      }
+    }
+    const maxShow = 60;
+    for (const { p, m } of hits.slice(0, maxShow)) {
+      const isCur = s.providerId === p.id && activeModel === m;
+      list.appendChild(h('button', {
+        class: isCur ? 'on' : '', role: 'menuitem',
+        onclick: () => { closeMenu(); setS({ providerId: p.id, model: m === p.model ? '' : m }); },
+      }, (isCur ? '✓ ' : '   ') + `${p.name} · ${m}`, m === p.model ? h('span', { class: 'k' }, '默认') : null));
+    }
+    if (hits.length > maxShow) {
+      list.appendChild(h('div', { class: 'picker-empty' }, `共 ${hits.length} 项匹配，仅显示前 ${maxShow} 项`));
+    }
+    if (!hits.length) {
+      list.appendChild(h('div', { class: 'picker-empty' }, '没有匹配的模型'));
+    }
+  };
+
+  renderList('');
+  if (search) search.addEventListener('input', () => renderList(search.value));
+
+  const r = anchor.getBoundingClientRect();
+  openMenu([
+    ...(search ? [search] : []),
+    list,
+    h('hr'),
+    h('button', {
+      class: !curProvider ? 'on' : '', role: 'menuitem',
+      onclick: () => { closeMenu(); setS({ providerId: 'demo', model: '' }); },
+    }, (!curProvider ? '✓ ' : '   ') + '演示模式（内置示例）'),
+    h('button', {
+      role: 'menuitem',
+      onclick: () => { closeMenu(); openSettings('providers'); },
+    }, '⚙ 管理模型服务…'),
+  ], r.left, r.bottom + 4, 'picker', anchor);
+  search?.focus();
 }
 
 export function renderTabBody(tab: Tab): HTMLElement {
@@ -57,7 +142,12 @@ export function renderTabBody(tab: Tab): HTMLElement {
     h('select', { class: 'sel', title, 'aria-label': title, value, onchange: (e: Event) => onchange((e.target as HTMLSelectElement).value) }, options.map(([v, l]) => h('option', { value: v }, l)));
   // 方向、翻译模式、格式处理互相独立，改一个不会影响另一个
   const setS = (patch: Partial<Tab['settings']>) => { Object.assign(s, patch); save(); renderTab(tab.id); };
-  const modelValue = provider ? `${provider.id}::${s.model || provider.model}` : 'demo::';
+  const activeModel = provider ? (s.model || provider.model) : '';
+  const modelLabel = provider ? `${provider.name} · ${activeModel || '未填模型'}` : '演示模式（内置示例）';
+  const modelBtn = h('button', {
+    type: 'button', class: 'sel sel-btn', title: '模型：' + modelLabel, 'aria-label': '模型',
+    onclick: () => openTabModelMenu(modelBtn, tab, setS),
+  }, h('span', { class: 'sel-lbl' }, modelLabel), h('span', { class: 'sel-caret', html: ICONS.caret }));
   const preset = getPrompt(s.promptId);
   const fmt = FORMAT_MODES.find(f => f.id === s.latex) || FORMAT_MODES[0];
   const dirSel = sel(s.dir, [['auto', '自动（中 ⇄ 英）'], ['en-zh', '英 → 中'], ['zh-en', '中 → 英']], v => setS({ dir: v as Tab['settings']['dir'] }), '翻译方向：自动 = 原文是中文就译成英文，否则译成中文');
@@ -69,7 +159,7 @@ export function renderTabBody(tab: Tab): HTMLElement {
     dirSel,
     h('span', { class: 'sel-group' }, modeSel,
       h('button', { class: 'btn sm icon ghost', title: '查看 / 修改这个翻译模式的提示词（可重置为原始版本）', 'aria-label': '编辑提示词', onclick: () => openSettings('prompts', s.promptId) }, '✎')),
-    sel(modelValue, modelOptions(), v => { const [pid, m] = v.split('::'); setS({ providerId: pid, model: m || '' }); }, '模型'),
+    modelBtn,
     h('span', { class: 'sel-group' }, fmtSel,
       h('button', { class: 'btn sm icon ghost', title: '几种格式处理方式有什么区别？', 'aria-label': '格式处理说明', onclick: (e: MouseEvent) => openFormatHelp(e.currentTarget as HTMLElement) }, '?')),
     h('div', { class: 'seg', title: '标签内布局' },

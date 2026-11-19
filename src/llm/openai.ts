@@ -30,6 +30,9 @@ async function send(f: typeof fetch, url: string, init: RequestInit, signal?: Ab
 
 const authHeaders = (p: Provider): Record<string, string> => (p.apiKey.trim() ? { Authorization: 'Bearer ' + p.apiKey.trim() } : {});
 
+/** 已知不接受 temperature 参数的推理模型 */
+const NO_TEMP_MODELS = /(?:^|\/)(?:o[134](?:$|[-.])|deepseek-reasoner$)/i;
+
 /** OpenAI 兼容 /chat/completions 流式调用（DeepSeek、OpenAI、OpenRouter、Ollama 等） */
 export async function openaiChat(p: Provider, model: string, req: ChatRequest, f: typeof fetch): Promise<ChatResult> {
   const base = normBase(p.baseUrl);
@@ -39,11 +42,22 @@ export async function openaiChat(p: Provider, model: string, req: ChatRequest, f
     model, stream: true,
     messages: [{ role: 'system', content: req.system }, { role: 'user', content: req.user }],
   };
-  if (p.temperature != null) body.temperature = p.temperature;
+  if (p.temperature != null && !NO_TEMP_MODELS.test(model)) body.temperature = p.temperature;
   if (templateOf(p.kind).streamUsage) body.stream_options = { include_usage: true };
-  const res = await send(f, base + '/chat/completions', {
+  const post = () => send(f, base + '/chat/completions', {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders(p) }, body: JSON.stringify(body),
   }, req.signal);
+  let res: Response;
+  try {
+    res = await post();
+  } catch (e) {
+    if (body.temperature !== undefined && e instanceof LlmError && e.status === 400 && /temperature/i.test(e.message)) {
+      delete body.temperature;
+      res = await post();
+    } else {
+      throw e;
+    }
+  }
 
   type U = { prompt_tokens?: number; completion_tokens?: number; prompt_cache_hit_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
   const toUsage = (u: U | null | undefined) => (u ? { input: u.prompt_tokens ?? 0, output: u.completion_tokens ?? 0, cacheHit: u.prompt_cache_hit_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0 } : null);

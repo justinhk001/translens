@@ -274,6 +274,33 @@ table.cmp td:first-child { color: var(--text-3); white-space: nowrap; width: aut
 .modal button:disabled { opacity: .45; cursor: default; }
 .hint code { font-family: var(--font-mono); font-size: 11px; background: var(--ph-bg); padding: 0 4px; border-radius: 4px; }
 
+/* 模型服务卡片（折叠/展开、模型选择胶囊、搜索下拉菜单） */
+.card.provider { padding: 10px 12px; }
+.card.provider.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.provider-head { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; flex-wrap: wrap; min-height: 26px; }
+.provider-head .chev { color: var(--text-3); transition: transform .15s ease; transform: rotate(-90deg); flex: 0 0 auto; }
+.provider-head .chev.open { transform: rotate(0deg); }
+.provider-body { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.model-badge-slot { display: inline-flex; align-items: center; min-width: 0; }
+.model-pill { display: inline-flex; align-items: center; gap: 4px; max-width: 240px; height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel-2); color: var(--text-2); font-size: 12px; }
+.model-pill:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-weak); }
+.sel-btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; max-width: 210px; text-align: left; }
+.sel-btn:hover { background: var(--hover); }
+.sel-btn.model-trigger { max-width: none; flex: 1; min-width: 180px; justify-content: space-between; height: 30px; }
+.sel-lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sel-caret { flex: 0 0 auto; color: var(--text-3); }
+.adv-settings { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.adv-settings > summary { cursor: pointer; display: flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 12px; list-style: none; }
+.adv-settings > summary::-webkit-details-marker { display: none; }
+.adv-settings > summary::before { content: "▸"; color: var(--text-3); font-size: 11px; transition: transform .15s ease; }
+.adv-settings[open] > summary::before { transform: rotate(90deg); }
+.proxy-card > summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.menu.picker { min-width: 260px; max-width: min(420px, calc(100vw - 16px)); }
+.picker-search { width: 100%; height: 28px; margin-bottom: 4px; font-size: 12px; }
+.picker-list { max-height: 260px; overflow: auto; }
+.picker-empty { padding: 12px 10px; text-align: center; color: var(--text-3); font-size: 12px; }
+.menu button.picker-more { color: var(--accent); font-size: 12px; }
+
 /* AI 解读差异 */
 .analysis-modal { flex-direction: column; height: auto; max-height: min(720px, calc(100vh - 40px)); }
 .analysis-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 16px 18px 10px; border-bottom: 1px solid var(--border); }
@@ -294,6 +321,7 @@ table.cmp td:first-child { color: var(--text-3); white-space: nowrap; width: aut
   .modal nav .ttl { display: none; }
   .grid2 { grid-template-columns: 1fr; }
   .field { grid-template-columns: 1fr; }
+  .sel-btn.model-trigger { min-width: 140px; }
 }
 @media (max-width: 1180px) { .hide-lg { display: none !important; } }
 @media (max-width: 900px) { .hide-md { display: none !important; } }

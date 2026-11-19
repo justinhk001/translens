@@ -1,24 +1,35 @@
 import type { FormatMode, PromptLang, PromptPreset, Provider } from '../types';
 import { BLANK_PROMPT, BUILTIN_PROMPTS, FORMAT_MODES, MARKUP_RULES } from '../presets/prompts';
-import { PROVIDER_TEMPLATES, providerFromTemplate, templateOf } from '../presets/providers';
+import { PROVIDER_TEMPLATES, isLocalProvider, pickDefaultModel, providerFromTemplate, templateOf } from '../presets/providers';
 import { buildSegments } from '../core/segment';
 import { buildUser, macroHits } from '../core/prompt';
 import { uid } from '../core/text';
 import { balance, chat, listModels } from '../llm';
 import { dbClear, dbCount, requestPersist, storageInfo } from '../store/db';
-import { focusedTab, getPrompt, initialState, replaceState, resolveDir, save, serialize, state } from '../store/state';
+import { activateProvider, focusedTab, getPrompt, initialState, providerUsage, replaceState, resolveDir, save, serialize, setProviderModel, state } from '../store/state';
 import { systemFor } from '../app/translate';
-import { $, ICONS, download, h, toast } from './dom';
+import { $, ICONS, closeMenu, download, h, openMenu, toast } from './dom';
 import { renderAll } from './layout';
 import { applyAppearance } from './topbar';
 
 type Section = 'providers' | 'prompts' | 'format' | 'glossary' | 'appearance' | 'data';
 let section: Section = 'providers';
+const expandedProviders = new Set<string>();
+const expandedAdvanced = new Set<string>();
+const needsSetup = (p: Provider) => !p.baseUrl.trim() || !p.model.trim() || (!isLocalProvider(p.kind) && !p.apiKey.trim());
 export const settingsOpen = () => !!$('.modal-bg.settings');
 
 export function openSettings(sec?: Section, promptId?: string): void {
+  closeMenu();
   if (sec) section = sec;
   if (promptId) promptSel = promptId;
+  const wasOpen = settingsOpen();
+  if (!wasOpen) {
+    expandedProviders.clear();
+    for (const p of state.providers) if (needsSetup(p)) expandedProviders.add(p.id);
+    const liveIds = new Set(state.providers.map(p => p.id));
+    for (const id of expandedAdvanced) if (!liveIds.has(id)) expandedAdvanced.delete(id);
+  }
   const keepScroll = $('.modal-bg.settings .content')?.scrollTop ?? 0;
   $('.modal-bg.settings')?.remove();
   const nav: [Section, string][] = [['providers', '模型服务'], ['prompts', '翻译模式（提示词）'], ['format', '格式处理'], ['glossary', '术语表'], ['appearance', '外观'], ['data', '数据与隐私']];
@@ -32,7 +43,7 @@ export function openSettings(sec?: Section, promptId?: string): void {
   document.body.appendChild(bg);
   if (sec === undefined) content.scrollTop = keepScroll;
 }
-export function closeSettings(): void { $('.modal-bg.settings')?.remove(); renderAll(); }
+export function closeSettings(): void { closeMenu(); $('.modal-bg.settings')?.remove(); renderAll(); }
 
 const field = (label: string, ...control: (HTMLElement | null)[]) => h('div', { class: 'field' }, h('label', {}, label), h('div', { class: 'ctl' }, control));
 const input = (value: string | number | null, oninput: (v: string) => void, attrs: Record<string, unknown> = {}) =>
@@ -45,39 +56,294 @@ const check = (checked: boolean, label: string, onchange: (v: boolean) => void) 
 // ---------------------------------------------------------------------------
 // 模型服务
 // ---------------------------------------------------------------------------
+function openProviderModelPicker(anchor: HTMLElement, p: Provider, onPick: (model: string) => void, onManual?: () => void): void {
+  const all = [...new Set([...(p.model ? [p.model] : []), ...p.models].filter(Boolean))];
+  const list = h('div', { class: 'picker-list' });
+  const search = all.length > 8
+    ? (h('input', { class: 'input picker-search', placeholder: `搜索模型（共 ${all.length} 个）…`, spellcheck: 'false' }) as HTMLInputElement)
+    : null;
+  let firstMatch: string | null = null;
+  const renderList = (query: string) => {
+    list.replaceChildren();
+    const trimmed = query.trim();
+    const q = trimmed.toLowerCase();
+    const matches = q ? all.filter(m => m.toLowerCase().includes(q)) : all;
+    firstMatch = matches[0] ?? null;
+    for (const m of matches) {
+      const isCur = m === p.model;
+      const isCustom = !p.models.includes(m);
+      list.appendChild(h('button', {
+        class: isCur ? 'on' : '', role: 'menuitem',
+        onclick: () => { closeMenu(); onPick(m); },
+      }, (isCur ? '✓ ' : '   ') + m, isCustom ? h('span', { class: 'k' }, '当前') : null));
+    }
+    if (trimmed && !all.includes(trimmed)) {
+      list.appendChild(h('button', { role: 'menuitem', onclick: () => { closeMenu(); onPick(trimmed); } }, `使用自定义模型 “${trimmed}”`));
+    }
+    if (!list.childNodes.length) {
+      list.appendChild(h('div', { class: 'picker-empty' }, '没有匹配的模型'));
+    }
+  };
+  renderList('');
+  if (search) {
+    search.addEventListener('input', () => renderList(search.value));
+    search.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const pick = firstMatch || search.value.trim();
+        if (pick) { closeMenu(); onPick(pick); }
+      }
+    });
+  }
+  const items: HTMLElement[] = [search, list].filter(Boolean) as HTMLElement[];
+  if (onManual) {
+    items.push(h('hr'), h('button', { role: 'menuitem', onclick: () => { closeMenu(); onManual(); } }, '✎ 手动输入模型名…'));
+  }
+  const rect = anchor.getBoundingClientRect();
+  openMenu(items, rect.left, rect.bottom + 4, 'picker', anchor);
+  const menu = $('.menu.picker');
+  if (menu) {
+    const mw = Math.max(260, Math.round(rect.width));
+    menu.style.minWidth = mw + 'px';
+    const mr = menu.getBoundingClientRect();
+    menu.style.left = Math.max(8, Math.min(rect.left, innerWidth - mr.width - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(rect.bottom + 4, innerHeight - mr.height - 8)) + 'px';
+  }
+  search?.focus();
+}
+
 function secProviders(c: HTMLElement): void {
   c.append(h('h3', {}, '模型服务'),
-    h('p', { class: 'hint' }, 'API Key 只保存在本浏览器，请求从浏览器直接发往你填写的地址。DeepSeek、OpenAI、OpenRouter、Ollama 等走 OpenAI 兼容协议；Claude 使用 Anthropic 官方 SDK。'));
+    h('p', { class: 'hint' }, 'API Key 只保存在本浏览器，请求从浏览器直接发往你填写的地址。已为各服务预设适合翻译的 temperature / 思考强度；点卡片上的「切换使用」或模型胶囊即可直接切换。'));
   const tplSel = select('deepseek', PROVIDER_TEMPLATES.map(t => [t.kind, t.name]), () => {});
+  const allExpanded = state.providers.length > 0 && state.providers.every(p => expandedProviders.has(p.id));
   c.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('span', {}, '从模板添加：'), tplSel,
     h('button', { class: 'btn sm primary', onclick: () => {
       const p = providerFromTemplate(templateOf((tplSel as HTMLSelectElement).value), uid());
       state.providers.push(p);
       // 仍在演示模式的标签自动切到新服务
-      for (const w of state.workspaces) for (const t of Object.values(w.tabs)) if (t.settings.providerId === 'demo') { t.settings.providerId = p.id; t.settings.model = ''; }
+      for (const w of state.workspaces) for (const t of Object.values(w.tabs)) if (t.kind === 'translate' && t.settings.providerId === 'demo') { t.settings.providerId = p.id; t.settings.model = ''; }
+      expandedProviders.clear();
+      expandedProviders.add(p.id);
       save(); openSettings();
-    } }, '添加'))));
+      const card = $(`.card.provider[data-provider="${p.id}"]`);
+      card?.scrollIntoView({ block: 'nearest' });
+      const target = !p.baseUrl.trim() ? '[data-focus="url"]' : !isLocalProvider(p.kind) ? '[data-focus="key"]' : '[data-focus="model"]';
+      (card?.querySelector(target) as HTMLInputElement | null)?.focus();
+    } }, '添加'),
+    state.providers.length > 1 ? h('span', { class: 'spacer' }) : null,
+    state.providers.length > 1 ? h('button', { class: 'btn sm ghost', onclick: () => {
+      if (allExpanded) expandedProviders.clear();
+      else state.providers.forEach(p => expandedProviders.add(p.id));
+      openSettings();
+    } }, allExpanded ? '全部收起' : '全部展开') : null)));
   if (!state.providers.length) c.append(h('div', { class: 'empty' }, '还没有模型服务。推荐先添加 DeepSeek：注册后在 platform.deepseek.com 创建 API Key，粘贴到下方即可。'));
   for (const p of state.providers) c.append(providerCard(p));
 
-  c.append(h('h3', { style: { marginTop: '22px' } }, '代理（可选）'),
-    h('p', { class: 'hint' }, '少数服务不允许浏览器直接跨域调用。部署到 Cloudflare Pages 时，本项目自带一个只转发、不记录的代理函数 /api/proxy：在 Cloudflare 项目设置里添加环境变量 PROXY_ALLOWED_HOSTS（如 api.deepseek.com），然后在上方服务卡片勾选「通过代理」。'),
-    h('div', { class: 'card' },
-      field('代理地址', input(state.proxy.url, v => { state.proxy.url = v; save(); }, { placeholder: '/api/proxy' })),
-      field('访问口令', input(state.proxy.token, v => { state.proxy.token = v; save(); }, { type: 'password', placeholder: '与 PROXY_TOKEN 一致，未设置可留空', autocomplete: 'off' }))));
+  const proxyOpen = !!(state.proxy.token || (state.proxy.url && state.proxy.url !== '/api/proxy') || state.providers.some(p => p.useProxy));
+  c.append(h('details', { class: 'card proxy-card', ...(proxyOpen ? { open: true } : {}) },
+    h('summary', {}, h('b', {}, '代理设置（可选）'), h('span', { class: 'hint' }, '仅浏览器直连遇跨域（CORS）限制时需要')),
+    h('p', { class: 'hint', style: { marginTop: '8px' } }, '部署到 Cloudflare Pages 时，本项目自带一个只转发、不记录的代理函数 /api/proxy：在 Cloudflare 项目设置里添加环境变量 PROXY_ALLOWED_HOSTS（如 api.deepseek.com），然后在上方服务卡片的高级设置中勾选「通过代理转发」。'),
+    field('代理地址', input(state.proxy.url, v => { state.proxy.url = v; save(); }, { placeholder: '/api/proxy' })),
+    field('访问口令', input(state.proxy.token, v => { state.proxy.token = v; save(); }, { type: 'password', placeholder: '与 PROXY_TOKEN 一致，未设置可留空', autocomplete: 'off' }))));
 }
 
 function providerCard(p: Provider): HTMLElement {
   const tpl = templateOf(p.kind);
+  const expanded = expandedProviders.has(p.id);
+  const usage = providerUsage(p.id);
+  const isActive = usage === 'all' || usage === 'focused';
   const status = h('span', { class: 'pill' }, '未测试');
   const setStatus = (cls: string, text: string) => { status.className = 'pill ' + cls; status.textContent = text; };
-  const keyInput = input(p.apiKey, v => { p.apiKey = v; save(); }, { type: 'password', placeholder: p.kind === 'ollama' || p.kind === 'lmstudio' ? '本地模型可留空' : 'sk-…', autocomplete: 'off' }) as HTMLInputElement;
-  const modelsTa = h('textarea', { class: 'ta', rows: '2', value: p.models.join(', '), placeholder: '可选：多个模型用逗号分隔，翻译工具条里可随时切换', oninput: (e: Event) => { p.models = (e.target as HTMLTextAreaElement).value.split(/[,\n]/).map(s => s.trim()).filter(Boolean); save(); } }) as HTMLTextAreaElement;
-  const modelInput = input(p.model, v => { p.model = v.trim(); save(); }, { placeholder: tpl.model || '模型名' });
-  const run = async (label: string, fn: () => Promise<string>) => {
-    setStatus('', label + '…');
-    try { setStatus('ok', await fn()); } catch (e) { setStatus('bad', ((e as Error).message || String(e)).slice(0, 160)); }
+
+  const headTitle = h('b', {}, p.name || '未命名服务');
+  const modelBadgeSlot = h('span', { class: 'model-badge-slot' });
+  const keyWarn = h('span', { class: 'pill warn-pill' }, '未填 Key');
+  const metaSummary = h('span', { class: 'hint hide-sm' });
+  const advSummary = h('span', { class: 'hint' });
+
+  let manualMode = p.models.length === 0;
+  let modelsTa: HTMLTextAreaElement | null = null;
+  const modelCtl = h('div', { class: 'ctl' });
+
+  const syncHeader = () => {
+    headTitle.textContent = p.name || '未命名服务';
+    keyWarn.style.display = !isLocalProvider(p.kind) && !p.apiKey.trim() ? '' : 'none';
+    const tempText = p.protocol === 'anthropic'
+      ? (p.effort ? `思考 ${p.effort}` : 'Anthropic')
+      : (p.temperature != null ? `温度 ${p.temperature}` : '默认温度');
+    metaSummary.textContent = expanded ? '' : tempText;
+    advSummary.textContent = [
+      p.protocol === 'anthropic' ? `思考强度 ${p.effort || '不设置'}` : (p.temperature != null ? `温度 ${p.temperature}` : '默认温度'),
+      `并发 ${p.concurrency}`,
+      p.keyMode === 'session' ? '仅本次会话' : '本地保存',
+      p.useProxy ? '代理' : '',
+    ].filter(Boolean).join(' · ');
+
+    modelBadgeSlot.replaceChildren();
+    if (p.models.length > 0) {
+      const pillBtn = h('button', {
+        type: 'button', class: 'model-pill', title: '点击直接切换默认模型',
+        onclick: (e: Event) => {
+          e.stopPropagation();
+          openProviderModelPicker(pillBtn, p, m => {
+            setProviderModel(p, m); save(); renderAll(); syncHeader(); renderModelCtl();
+          });
+        },
+      }, h('span', { class: 'sel-lbl' }, p.model || '选择模型'), h('span', { class: 'sel-caret', html: ICONS.caret }));
+      modelBadgeSlot.appendChild(pillBtn);
+    } else if (p.model) {
+      modelBadgeSlot.appendChild(h('span', { class: 'pill' }, p.model));
+    } else {
+      modelBadgeSlot.appendChild(h('button', {
+        type: 'button', class: 'pill warn-pill', title: '点击填写默认模型',
+        onclick: (e: Event) => {
+          e.stopPropagation();
+          expandedProviders.add(p.id);
+          openSettings();
+          const card = $(`.card.provider[data-provider="${p.id}"]`);
+          (card?.querySelector('[data-focus="model"]') as HTMLInputElement | null)?.focus();
+        },
+      }, '未填模型'));
+    }
   };
+
+  const onPickModel = (next: string, fromInput = false) => {
+    setProviderModel(p, next);
+    save();
+    syncHeader();
+    if (!fromInput) {
+      renderAll();
+      if (expanded) renderModelCtl();
+    }
+  };
+
+  const run = async (label: string, fn: () => Promise<string>, onError?: (msg: string) => string) => {
+    setStatus('', label + '…');
+    try { setStatus('ok', await fn()); }
+    catch (e) {
+      const msg = (e as Error).message || String(e);
+      setStatus('bad', (onError ? onError(msg) : msg).slice(0, 160));
+    }
+  };
+
+  const fetchBtn = h('button', {
+    type: 'button', class: 'btn sm',
+    onclick: async () => {
+      fetchBtn.disabled = true;
+      try {
+        await run('获取中', async () => {
+          const ids = await listModels(p, state.proxy);
+          if (!ids.length) {
+            manualMode = true;
+            renderModelCtl();
+            return '未返回模型，可手动输入';
+          }
+          p.models = ids;
+          if (modelsTa) modelsTa.value = ids.join(', ');
+          if (!p.model.trim()) setProviderModel(p, pickDefaultModel(ids, p.kind));
+          save();
+          renderAll();
+          manualMode = false;
+          renderModelCtl();
+          syncHeader();
+          return `已获取 ${ids.length} 个模型，可直接选择`;
+        }, msg => {
+          if (!p.models.length) { manualMode = true; renderModelCtl(); }
+          return msg.slice(0, 130) + '（可手动输入模型名）';
+        });
+      } finally {
+        fetchBtn.disabled = false;
+      }
+    },
+  }, '获取模型') as HTMLButtonElement;
+
+  const focusModelInput = () => {
+    (modelCtl.querySelector('[data-focus="model"]') as HTMLInputElement | null)?.focus();
+  };
+
+  const renderModelCtl = () => {
+    modelCtl.replaceChildren();
+    if (!manualMode && p.models.length > 0) {
+      const trigger = h('button', {
+        type: 'button', class: 'sel sel-btn model-trigger', title: '点击从已获取的模型列表中选择',
+        onclick: () => openProviderModelPicker(trigger, p, m => onPickModel(m), () => {
+          manualMode = true; renderModelCtl(); focusModelInput();
+        }),
+      },
+        h('span', { class: 'sel-lbl' }, p.model || '请选择模型', ' ', h('span', { class: 'muted' }, `(${p.models.length})`)),
+        h('span', { class: 'sel-caret', html: ICONS.caret }));
+      modelCtl.append(
+        trigger,
+        fetchBtn,
+        h('button', { type: 'button', class: 'btn sm', title: '改为手动输入模型名', onclick: () => { manualMode = true; renderModelCtl(); focusModelInput(); } }, '手动输入'),
+      );
+    } else {
+      modelCtl.append(
+        input(p.model, v => onPickModel(v.trim(), true), { 'data-focus': 'model', placeholder: tpl.model || '输入模型名，或点右侧「获取模型」' }),
+        fetchBtn,
+      );
+      if (p.models.length > 0) {
+        modelCtl.append(h('button', { type: 'button', class: 'btn sm', onclick: () => { manualMode = false; renderModelCtl(); } }, '从列表选'));
+      }
+    }
+  };
+
+  const switchBtn = usage === 'all'
+    ? h('span', { class: 'pill ok', onclick: (e: Event) => e.stopPropagation() }, '✓ 当前使用')
+    : h('button', {
+      type: 'button', class: 'btn sm' + (usage === 'focused' ? ' on' : ''),
+      title: usage === 'focused' ? '当前焦点标签正在使用；点击将当前工作区所有标签统一切换到此服务' : '将当前工作区切换到此模型服务',
+      onclick: (e: Event) => {
+        e.stopPropagation();
+        activateProvider(p.id);
+        save(); renderAll(); openSettings();
+        toast(`已切换到「${p.name}${p.model ? ' · ' + p.model : ''}」`);
+      },
+    }, usage === 'focused' ? '✓ 当前标签' : '切换使用');
+
+  const toggleExpand = () => {
+    if (expandedProviders.has(p.id)) expandedProviders.delete(p.id);
+    else expandedProviders.add(p.id);
+    openSettings();
+  };
+
+  const head = h('div', { class: 'provider-head', onclick: toggleExpand },
+    h('span', { class: 'chev' + (expanded ? ' open' : ''), html: ICONS.caret }),
+    headTitle,
+    modelBadgeSlot,
+    keyWarn,
+    metaSummary,
+    h('span', { class: 'spacer' }),
+    switchBtn,
+    h('button', {
+      type: 'button', class: 'btn sm ghost',
+      onclick: (e: Event) => { e.stopPropagation(); toggleExpand(); },
+    }, expanded ? '收起' : '详情'));
+
+  syncHeader();
+
+  if (!expanded) {
+    return h('div', { class: 'card provider' + (isActive ? ' active' : ''), 'data-provider': p.id }, head);
+  }
+
+  const keyInput = input(p.apiKey, v => { p.apiKey = v; save(); syncHeader(); }, {
+    'data-focus': 'key', type: 'password',
+    placeholder: isLocalProvider(p.kind) ? '本地模型可留空' : 'sk-…', autocomplete: 'off',
+  }) as HTMLInputElement;
+
+  modelsTa = h('textarea', {
+    class: 'ta', rows: '2', value: p.models.join(', '),
+    placeholder: '可选：多个模型用逗号分隔，工具条和顶部胶囊可随时切换',
+    oninput: (e: Event) => {
+      p.models = (e.target as HTMLTextAreaElement).value.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+      if (!p.models.length) manualMode = true;
+      save(); renderModelCtl(); syncHeader();
+    },
+  }) as HTMLTextAreaElement;
+
+  renderModelCtl();
+
   const price = p.price;
   const priceInput = (k: 'input' | 'output' | 'cacheHit') => input(price ? price[k] : '', v => {
     const n = parseFloat(v);
@@ -87,45 +353,58 @@ function providerCard(p: Provider): HTMLElement {
     save();
   }, { type: 'number', min: '0', step: '0.01', style: { width: '90px' } });
 
-  return h('div', { class: 'card provider' },
-    h('div', { class: 'card-head' }, h('b', {}, p.name), h('span', { class: 'pill' }, p.protocol === 'anthropic' ? 'Anthropic SDK' : 'OpenAI 兼容'), h('span', { class: 'spacer' }),
-      h('button', { class: 'btn sm danger', onclick: () => {
+  const advDetails = h('details', {
+    class: 'adv-settings',
+    ...(expandedAdvanced.has(p.id) ? { open: true } : {}),
+    ontoggle: (e: Event) => {
+      if ((e.currentTarget as HTMLDetailsElement).open) expandedAdvanced.add(p.id);
+      else expandedAdvanced.delete(p.id);
+    },
+  },
+    h('summary', {}, h('span', {}, '高级设置'), advSummary),
+    h('div', { style: { marginTop: '8px' } },
+      field('名称', input(p.name, v => { p.name = v; save(); syncHeader(); })),
+      p.protocol === 'anthropic'
+        ? field('思考强度', select(p.effort, [['low', 'low（预设：快、省）'], ['medium', 'medium'], ['high', 'high'], ['', '不设置（旧模型请选此项）']], v => { p.effort = v as Provider['effort']; save(); syncHeader(); }))
+        : field('temperature',
+          input(p.temperature, v => { const n = parseFloat(v); p.temperature = isNaN(n) ? null : n; save(); syncHeader(); }, { type: 'number', step: '0.1', min: '0', max: '2', placeholder: '留空 = 服务默认值', style: { width: '120px' } }),
+          h('span', { class: 'hint' }, p.kind === 'deepseek' ? '已按官方建议预设 1.3，一般无需修改' : '已预设 0.3（适合忠实翻译），留空 = 服务默认')),
+      field('可选模型', modelsTa),
+      field('并发数', input(p.concurrency, v => { p.concurrency = Math.max(1, Math.min(6, parseInt(v) || 2)); save(); syncHeader(); }, { type: 'number', min: '1', max: '6', style: { width: '80px' } })),
+      field('单价（每百万 tokens）',
+        h('span', { class: 'hint' }, '输入'), priceInput('input'), h('span', { class: 'hint' }, '缓存命中'), priceInput('cacheHit'), h('span', { class: 'hint' }, '输出'), priceInput('output'),
+        select(price?.currency || (p.kind === 'deepseek' ? 'CNY' : 'USD'), [['CNY', '¥ 人民币'], ['USD', '$ 美元']], v => { if (p.price) { p.price.currency = v as 'CNY' | 'USD'; save(); } })),
+      field('Key 保存方式', select(p.keyMode, [['persist', '保存在本浏览器'], ['session', '仅本次会话（关闭浏览器后需重新填写）']], v => { p.keyMode = v as Provider['keyMode']; save(); syncHeader(); })),
+      field('网络', check(p.useProxy, '通过代理转发（需先部署代理，见下方）', v => { p.useProxy = v; save(); syncHeader(); }))));
+
+  const body = h('div', { class: 'provider-body' },
+    tpl.hint ? h('p', { class: 'hint', style: { marginTop: '0' } }, tpl.hint) : null,
+    field('Base URL', input(p.baseUrl, v => { p.baseUrl = v.trim(); save(); }, { 'data-focus': 'url', placeholder: 'https://api.example.com/v1' })),
+    field('API Key', keyInput, h('button', { type: 'button', class: 'btn sm', onclick: (e: Event) => { keyInput.type = keyInput.type === 'password' ? 'text' : 'password'; (e.target as HTMLElement).textContent = keyInput.type === 'password' ? '显示' : '隐藏'; } }, '显示')),
+    h('div', { class: 'field' }, h('label', {}, '默认模型'), modelCtl),
+    h('div', { class: 'row', style: { marginTop: '10px' } },
+      h('button', { type: 'button', class: 'btn sm', onclick: () => {
+        if (!p.model.trim()) { setStatus('bad', '请先选择或输入默认模型'); return; }
+        run('测试中', async () => {
+          const t0 = performance.now(); let out = '';
+          await chat(p, p.model, { system: 'Translate the user text into Simplified Chinese. Output only the translation.', user: 'Hello, world.', onText: d => { out += d; } }, state.proxy);
+          return `可用 · ${Math.round(performance.now() - t0)}ms · “${out.trim().slice(0, 24)}”`;
+        });
+      } }, '测试连接'),
+      tpl.balance ? h('button', { type: 'button', class: 'btn sm', onclick: () => run('查询中', () => balance(p, state.proxy).then(b => '余额：' + b)) }, '查询余额') : null,
+      status,
+      h('span', { class: 'spacer' }),
+      h('button', { type: 'button', class: 'btn sm danger', onclick: () => {
         if (!confirm(`删除模型服务「${p.name}」？`)) return;
         state.providers = state.providers.filter(x => x !== p);
+        expandedProviders.delete(p.id);
+        expandedAdvanced.delete(p.id);
         for (const w of state.workspaces) for (const t of Object.values(w.tabs)) if (t.settings.providerId === p.id) { t.settings.providerId = state.providers[0]?.id || 'demo'; t.settings.model = ''; }
-        save(); openSettings();
+        save(); renderAll(); openSettings();
       } }, '删除')),
-    tpl.hint ? h('p', { class: 'hint' }, tpl.hint) : null,
-    field('名称', input(p.name, v => { p.name = v; save(); })),
-    field('Base URL', input(p.baseUrl, v => { p.baseUrl = v.trim(); save(); }, { placeholder: 'https://api.example.com/v1' })),
-    field('API Key', keyInput, h('button', { class: 'btn sm', onclick: (e: Event) => { keyInput.type = keyInput.type === 'password' ? 'text' : 'password'; (e.target as HTMLElement).textContent = keyInput.type === 'password' ? '显示' : '隐藏'; } }, '显示')),
-    field('默认模型', modelInput),
-    field('可选模型', modelsTa),
-    p.protocol === 'anthropic'
-      ? field('思考强度', select(p.effort, [['low', 'low（推荐：快、省）'], ['medium', 'medium'], ['high', 'high'], ['', '不设置（旧模型请选此项）']], v => { p.effort = v as Provider['effort']; save(); }))
-      : field('temperature', input(p.temperature, v => { const n = parseFloat(v); p.temperature = isNaN(n) ? null : n; save(); }, { type: 'number', step: '0.1', min: '0', max: '2', placeholder: '留空 = 服务默认值', style: { width: '160px' } })),
-    field('并发数', input(p.concurrency, v => { p.concurrency = Math.max(1, Math.min(6, parseInt(v) || 2)); save(); }, { type: 'number', min: '1', max: '6', style: { width: '80px' } })),
-    field('单价（每百万 tokens）',
-      h('span', { class: 'hint' }, '输入'), priceInput('input'), h('span', { class: 'hint' }, '缓存命中'), priceInput('cacheHit'), h('span', { class: 'hint' }, '输出'), priceInput('output'),
-      select(price?.currency || (p.kind === 'deepseek' ? 'CNY' : 'USD'), [['CNY', '¥ 人民币'], ['USD', '$ 美元']], v => { if (p.price) { p.price.currency = v as 'CNY' | 'USD'; save(); } })),
-    field('Key 保存方式', select(p.keyMode, [['persist', '保存在本浏览器'], ['session', '仅本次会话（关闭浏览器后需重新填写）']], v => { p.keyMode = v as Provider['keyMode']; save(); })),
-    field('网络', check(p.useProxy, '通过代理转发（需先部署代理，见下方）', v => { p.useProxy = v; save(); })),
-    h('div', { class: 'row', style: { marginTop: '10px' } },
-      h('button', { class: 'btn sm', onclick: () => run('测试中', async () => {
-        const t0 = performance.now(); let out = '';
-        await chat(p, p.model, { system: 'Translate the user text into Simplified Chinese. Output only the translation.', user: 'Hello, world.', onText: d => { out += d; } }, state.proxy);
-        return `可用 · ${Math.round(performance.now() - t0)}ms · “${out.trim().slice(0, 24)}”`;
-      }) }, '测试连接'),
-      h('button', { class: 'btn sm', onclick: () => run('获取中', async () => {
-        const ids = await listModels(p, state.proxy);
-        if (!ids.length) return '没有返回模型';
-        p.models = ids; modelsTa.value = ids.join(', ');
-        if (!p.model) { p.model = ids[0]; (modelInput as HTMLInputElement).value = ids[0]; }
-        save();
-        return `获取到 ${ids.length} 个模型`;
-      }) }, '获取模型列表'),
-      tpl.balance ? h('button', { class: 'btn sm', onclick: () => run('查询中', () => balance(p, state.proxy).then(b => '余额：' + b)) }, '查询余额') : null,
-      status));
+    advDetails);
+
+  return h('div', { class: 'card provider' + (isActive ? ' active' : ''), 'data-provider': p.id }, head, body);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
-import type { AppState, Dir, GroupNode, LayoutNode, Run, Segment, SplitNode, Tab, TabSettings, Workspace } from '../types';
+import type { AppState, Dir, GroupNode, LayoutNode, Provider, Run, Segment, SplitNode, Tab, TabSettings, Workspace } from '../types';
 import { BUILTIN_PROMPTS, DEFAULT_PROMPT_ID } from '../presets/prompts';
+import { templateOf } from '../presets/providers';
 import { SAMPLES } from '../presets/samples';
 import { looksChinese, uid } from '../core/text';
 import { dbGet, dbSet } from './db';
@@ -88,8 +89,8 @@ export function initialState(): AppState {
   };
 }
 
-/** 数据修订号：3 = 方向独立、默认「自动」；4 = 格式全部交给模型处理（去掉本地 LaTeX 处理） */
-const STATE_REV = 4;
+/** 数据修订号：3 = 方向独立、默认「自动」；4 = 格式全部交给模型处理（去掉本地 LaTeX 处理）；5 = 为模型服务预设合适的 temperature */
+const STATE_REV = 5;
 
 /** 旧版（本地处理 LaTeX）的译文：把 ⟦n⟧ 占位符还原成可读文字 */
 function migrateRuns(t: Tab): void {
@@ -138,8 +139,16 @@ function normalizeState(s: AppState): AppState {
   if (!out.workspaces.some(w => w.id === out.activeWs)) out.activeWs = out.workspaces[0].id;
   const promptIds = new Set(out.prompts.map(p => p.id));
   const upgradeDefaults = (s.rev ?? 2) < 3;
+  const upgradeTemp = (s.rev ?? 2) < 5;
   delete (out as unknown as Record<string, unknown>).rules;
   out.rev = STATE_REV;
+  if (upgradeTemp) {
+    for (const p of out.providers || []) {
+      if (p.protocol !== 'anthropic' && p.temperature == null) {
+        p.temperature = templateOf(p.kind).temperature ?? 0.3;
+      }
+    }
+  }
   for (const w of out.workspaces) for (const t of Object.values(w.tabs)) {
     if (upgradeDefaults && t.settings) { t.settings.dir = 'auto'; t.settings.latex = 'model'; t.settings.promptId = DEFAULT_PROMPT_ID; }
     if (t.settings && t.settings.latex !== 'model' && t.settings.latex !== 'raw') t.settings.latex = (t.settings.latex as string) === 'keep' ? 'raw' : 'model';
@@ -356,3 +365,38 @@ export const getPrompt = (id: string) => state.prompts.find(p => p.id === id) ||
 export const getProvider = (id: string) => state.providers.find(p => p.id === id) || null;
 export const srcLang = (t: Tab): 'en' | 'zh' => (resolveDir(t) === 'zh-en' ? 'zh' : 'en');
 export const tgtLang = (t: Tab): 'en' | 'zh' => (resolveDir(t) === 'zh-en' ? 'en' : 'zh');
+
+/** 判断某个模型服务在当前工作区的使用范围 */
+export function providerUsage(providerId: string): 'all' | 'focused' | 'some' | 'none' {
+  const tr = Object.values(ws().tabs).filter(t => t.kind === 'translate');
+  const f = focusedTab();
+  if (tr.length > 0 && tr.every(t => t.settings.providerId === providerId)) return 'all';
+  if (f && f.kind === 'translate' && f.settings.providerId === providerId) return 'focused';
+  if (tr.some(t => t.settings.providerId === providerId)) return 'some';
+  return 'none';
+}
+
+/** 将当前工作区的翻译标签统一切换到指定服务（同时迁移各工作区仍处于演示模式的标签） */
+export function activateProvider(providerId: string): void {
+  for (const t of Object.values(ws().tabs)) {
+    if (t.kind === 'translate') { t.settings.providerId = providerId; t.settings.model = ''; }
+  }
+  for (const w of state.workspaces) {
+    for (const t of Object.values(w.tabs)) {
+      if (t.kind === 'translate' && t.settings.providerId === 'demo') {
+        t.settings.providerId = providerId; t.settings.model = '';
+      }
+    }
+  }
+}
+
+/** 修改服务默认模型，同时保持此前跟随默认模型的标签自动同步到新模型 */
+export function setProviderModel(p: Provider, nextModel: string): void {
+  const prev = p.model;
+  p.model = nextModel;
+  for (const w of state.workspaces) {
+    for (const t of Object.values(w.tabs)) {
+      if (t.settings.providerId === p.id && t.settings.model === prev) t.settings.model = '';
+    }
+  }
+}
